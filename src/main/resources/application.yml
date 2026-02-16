@@ -1,0 +1,17 @@
+spring:
+  application:
+    name: ledgerx-lite
+  jpa:
+    hibernate:
+      ddl-auto: none
+    show-sql: false
+
+server:
+  port: 8080
+  servlet:
+    context-path: /api
+
+logging:
+  level:
+    root: INFO
+    com.ledgerxlite: DEBUG

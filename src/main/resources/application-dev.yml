@@ -1,0 +1,30 @@
+spring:
+  application:
+    name: ledgerx-lite
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/ledgerxlite
+    username: ledgerx_user
+    password: ledgerx_pass
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: none
+    show-sql: false
+
+  # Auto-configuration exclusions for development
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration
+      - org.springframework.boot.autoconfigure.orm.jpa.HibernateJpaAutoConfiguration
+
+server:
+  port: 8080
+  servlet:
+    context-path: /api
+
+logging:
+  level:
+    root: INFO
+    com.ledgerxlite: DEBUG
