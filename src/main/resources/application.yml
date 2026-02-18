@@ -1,15 +1,45 @@
 spring:
   application:
     name: ledgerx-lite
+
   jpa:
     hibernate:
-      ddl-auto: none
+      ddl-auto: none           # Schema managed by Flyway only
     show-sql: false
+    open-in-view: false        # Prevent lazy-load surprises in controllers
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: false
 
 server:
   port: 8080
   servlet:
     context-path: /api
+
+# Actuator — expose health + info only by default
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: when-authorized
+
+# Swagger
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+
+# JWT — MUST be overridden via environment variable in production
+ledgerx:
+  jwt:
+    secret: ${JWT_SECRET:change-me-in-production-must-be-32-chars}
+    expiry-ms: ${JWT_EXPIRY_MS:86400000}   # 24 hours default
 
 logging:
   level:

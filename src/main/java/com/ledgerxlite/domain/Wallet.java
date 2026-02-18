@@ -35,7 +35,7 @@ public class Wallet {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @OneToOne(fetch = FetchType.LAZY, optional = false)
+    @OneToOne(fetch = FetchType.EAGER, optional = false)
     @JoinColumn(name = "user_id", nullable = false, unique = true)
     private User user;
 
@@ -78,12 +78,30 @@ public class Wallet {
      * Create a new wallet for a user.
      * Initial balance is zero.
      * 
+     * INVARIANT-7: Currency is immutable after creation.
+     * 
      * @param user the wallet owner
-     * @param currency ISO 4217 currency code
+     * @param currency ISO 4217 currency code (must not be null or blank)
+     * @throws IllegalArgumentException if currency is invalid
      */
     public Wallet(User user, String currency) {
+        if (user == null) {
+            throw new IllegalArgumentException("User cannot be null");
+        }
+        if (currency == null || currency.isBlank()) {
+            throw new IllegalArgumentException(
+                "INVARIANT-7 VIOLATION: Currency must be specified and cannot change"
+            );
+        }
+        // Basic validation for currency format (3-10 chars, uppercase recommended)
+        if (currency.length() < 3 || currency.length() > 10) {
+            throw new IllegalArgumentException(
+                "INVARIANT-7 VIOLATION: Currency code must be 3-10 characters (ISO 4217)"
+            );
+        }
+        
         this.user = user;
-        this.currency = currency;
+        this.currency = currency.toUpperCase(); // Normalize to uppercase
         this.balance = BigDecimal.ZERO;
         this.updatedAt = Instant.now();
     }

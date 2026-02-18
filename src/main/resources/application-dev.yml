@@ -4,8 +4,8 @@ spring:
 
   datasource:
     url: jdbc:postgresql://localhost:5432/ledgerxlite
-    username: ledgerx_user
-    password: ledgerx_pass
+    username: nikki
+    password: Nikki1752@
     driver-class-name: org.postgresql.Driver
 
   jpa:

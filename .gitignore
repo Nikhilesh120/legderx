@@ -4,6 +4,14 @@ organize-*.sh
 *-setup.sh
 verify-*.sh
 
+# Docker
+docker-compose.override.yml
+.env
+
+# Local development
+application-local.yml
+application-local.properties
+
 # Maven
 target/
 pom.xml.tag
