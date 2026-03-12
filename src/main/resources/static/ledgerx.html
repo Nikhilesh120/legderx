@@ -1140,10 +1140,9 @@
       <div class="topbar-title" id="topbarTitle">
         <strong>Dashboard</strong>
       </div>
-      <div class="topbar-right">
-        <div class="topbar-wallet" id="topbarWallet">
-          Wallet <span id="topbarWalletId">—</span>
-        </div>
+      <div class="topbar-right" style="gap:8px">
+        <div class="topbar-wallet" id="topbarWallet">Wallet <span id="topbarWalletId">—</span></div>
+        <div class="topbar-wallet" style="color:var(--green)" id="topbarBalance">—</div>
         <button class="btn btn-ghost btn-sm" onclick="refreshCurrentView()">↺ Refresh</button>
       </div>
     </div>
@@ -1240,6 +1239,7 @@
               <div class="input-label">Description (optional)</div>
               <input class="input-field" type="text" id="qdep-desc" placeholder="Funds added" />
             </div>
+            <div style="font-size:11px; color:var(--text-3); margin-bottom:10px;">Available: <span style="color:var(--text-2)" id="qdep-available">—</span></div>
             <button class="btn btn-green" style="width:100%" onclick="quickDeposit()">↓ Deposit Funds</button>
           </div>
           <div class="panel">
@@ -1255,6 +1255,7 @@
               <div class="input-label">Description (optional)</div>
               <input class="input-field" type="text" id="qwith-desc" placeholder="Funds withdrawn" />
             </div>
+            <div style="font-size:11px; color:var(--text-3); margin-bottom:10px;">Available: <span style="color:var(--text-2)" id="qwith-available">—</span></div>
             <button class="btn btn-red" style="width:100%" onclick="quickWithdraw()">↑ Withdraw Funds</button>
           </div>
         </div>
@@ -1286,6 +1287,7 @@
             <input class="input-field" type="text" id="dep-desc" placeholder="Bank transfer, paycheck, etc." />
           </div>
           <hr class="divider" />
+          <div style="font-size:11px; color:var(--text-3); margin-bottom:12px;">Current balance: <span style="color:var(--text-2)" id="dep-available">—</span></div>
           <button class="btn btn-green" style="width:100%" onclick="doDeposit()">
             <span id="depBtnText">↓ Deposit to Wallet</span>
           </button>
@@ -1376,8 +1378,29 @@
       <!-- ── HISTORY ─────────────────────────────────────── -->
       <div class="view" id="view-history">
         <div class="section-header">
-          <div class="section-title">Transaction History</div>
+          <div class="section-title">Transaction History <span id="history-count" style="color:var(--text-3); font-size:10px; font-weight:400; letter-spacing:1px; margin-left:8px"></span></div>
           <button class="btn btn-ghost btn-sm" onclick="loadHistory()">↺ Refresh</button>
+        </div>
+        <div style="display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap;">
+          <div style="flex:1; min-width:180px; position:relative;">
+            <input class="input-field" id="history-search" type="text" placeholder="Search ref, description, amount..." oninput="applyHistoryFilter()" style="width:100%; padding-left:28px" />
+            <span style="position:absolute; left:10px; top:50%; transform:translateY(-50%); color:var(--text-3); pointer-events:none; font-size:12px">⌕</span>
+          </div>
+          <select class="input-field" id="history-filter" onchange="applyHistoryFilter()" style="width:160px; cursor:pointer">
+            <option value="all">All Types</option>
+            <option value="deposit">Deposit</option>
+            <option value="withdrawal">Withdrawal</option>
+            <option value="transfer_in">Transfer In</option>
+            <option value="transfer_out">Transfer Out</option>
+            <option value="refund">Refund</option>
+            <option value="fee">Fee</option>
+          </select>
+          <select class="input-field" id="history-sort" onchange="applyHistoryFilter()" style="width:140px; cursor:pointer">
+            <option value="newest">Newest First</option>
+            <option value="oldest">Oldest First</option>
+            <option value="highest">Highest Amount</option>
+            <option value="lowest">Lowest Amount</option>
+          </select>
         </div>
         <div class="tx-table-wrap">
           <table class="tx-table">
@@ -1445,13 +1468,14 @@ let state = {
   balance: null,
   currency: null,
   currentView: 'dashboard',
+  allTxs: [],           // cached transaction list for client-side filtering
+  pingInterval: null,   // API health ping timer
 };
 
 /* ═══════════════════════════════════════════════════════
    INIT
 ═══════════════════════════════════════════════════════ */
 window.onload = () => {
-  // Restore from sessionStorage
   const saved = sessionStorage.getItem('lx_session');
   if (saved) {
     try {
@@ -1463,23 +1487,40 @@ window.onload = () => {
       sessionStorage.removeItem('lx_session');
     }
   }
+  startPing();
 };
 
 function saveSession() {
   sessionStorage.setItem('lx_session', JSON.stringify({
-    token: state.token,
-    userId: state.userId,
-    email: state.email,
-    walletId: state.walletId,
-    balance: state.balance,
-    currency: state.currency,
-    apiBase: state.apiBase,
+    token: state.token, userId: state.userId, email: state.email,
+    walletId: state.walletId, balance: state.balance,
+    currency: state.currency, apiBase: state.apiBase,
   }));
 }
 
 function updateApiBase(v) {
   state.apiBase = v.trim().replace(/\/$/, '');
   saveSession();
+  pingApi();
+}
+
+/* ═══════════════════════════════════════════════════════
+   API HEALTH PING
+═══════════════════════════════════════════════════════ */
+function startPing() {
+  pingApi();
+  state.pingInterval = setInterval(pingApi, 30000);
+}
+
+async function pingApi() {
+  try {
+    const res = await fetch(state.apiBase + '/actuator/health', {
+      method: 'GET', signal: AbortSignal.timeout(4000)
+    });
+    setPip(res.ok ? 'ok' : 'err');
+  } catch(e) {
+    setPip('err');
+  }
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -1489,12 +1530,18 @@ async function api(method, path, body) {
   const headers = { 'Content-Type': 'application/json' };
   if (state.token) headers['Authorization'] = `Bearer ${state.token}`;
 
-  const opts = { method, headers };
+  const opts = { method, headers, signal: AbortSignal.timeout(15000) };
   if (body) opts.body = JSON.stringify(body);
 
   try {
     const res = await fetch(state.apiBase + path, opts);
     const data = await res.json().catch(() => ({}));
+
+    if (res.status === 401) {
+      toast('error', 'Session expired', 'Please sign in again');
+      doLogout();
+      throw new Error('Unauthorised');
+    }
 
     if (!res.ok) {
       const msg = data.message || data.error || `HTTP ${res.status}`;
@@ -1503,7 +1550,7 @@ async function api(method, path, body) {
     setPip('ok');
     return data;
   } catch(e) {
-    if (e.name === 'TypeError') {
+    if (e.name === 'TypeError' || e.name === 'TimeoutError') {
       setPip('err');
       throw new Error('Cannot reach API server. Check the base URL and make sure the backend is running.');
     }
@@ -1513,8 +1560,7 @@ async function api(method, path, body) {
 }
 
 function setPip(status) {
-  const pip = document.getElementById('statusPip');
-  pip.className = 'status-pip ' + status;
+  document.getElementById('statusPip').className = 'status-pip ' + status;
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -1530,7 +1576,6 @@ function switchAuthTab(tab) {
 async function doLogin() {
   const email = document.getElementById('loginEmail').value.trim();
   const password = document.getElementById('loginPassword').value;
-
   if (!email || !password) { toast('error', 'Missing fields', 'Email and password required'); return; }
 
   const btn = document.getElementById('loginBtn');
@@ -1544,7 +1589,6 @@ async function doLogin() {
     state.userId = data.userId;
     state.email = data.email;
 
-    // Get wallet
     const user = await api('GET', `/users/${data.userId}`);
     state.walletId = user.walletId;
     state.balance = user.balance;
@@ -1568,6 +1612,8 @@ async function doRegister() {
   const currency = document.getElementById('regCurrency').value;
 
   if (!email || !password) { toast('error', 'Missing fields', 'All fields are required'); return; }
+  if (password.length < 8) { toast('error', 'Weak password', 'Password must be at least 8 characters'); return; }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { toast('error', 'Invalid email', 'Please enter a valid email address'); return; }
 
   const btn = document.getElementById('registerBtn');
   const txt = document.getElementById('registerBtnText');
@@ -1588,10 +1634,9 @@ async function doRegister() {
 }
 
 function doLogout() {
-  state.token = null; state.userId = null; state.email = null;
-  state.walletId = null; state.balance = null; state.currency = null;
+  clearInterval(state.pingInterval);
+  Object.assign(state, { token: null, userId: null, email: null, walletId: null, balance: null, currency: null, allTxs: [] });
   sessionStorage.removeItem('lx_session');
-
   document.getElementById('mainApp').style.display = 'none';
   document.getElementById('authScreen').classList.add('visible');
   setPip('');
@@ -1601,61 +1646,77 @@ function enterApp() {
   document.getElementById('authScreen').classList.remove('visible');
   document.getElementById('mainApp').style.display = 'flex';
   document.getElementById('apiBaseUrl').value = state.apiBase;
-
-  // Update sidebar user info
   document.getElementById('userEmailDisplay').textContent = state.email || '—';
   document.getElementById('userIdDisplay').textContent = `ID: ${state.userId || '—'}`;
   const avatar = document.getElementById('userAvatar');
   avatar.textContent = (state.email || '?')[0].toUpperCase();
-
-  // Update topbar
   document.getElementById('topbarWalletId').textContent = state.walletId || '—';
-
-  // Update transfer from label
   document.getElementById('trfFrom').textContent = `Wallet #${state.walletId}`;
+  updateTopbarBalance();
+}
+
+/* ═══════════════════════════════════════════════════════
+   TOPBAR BALANCE (live)
+═══════════════════════════════════════════════════════ */
+function updateTopbarBalance() {
+  const el = document.getElementById('topbarBalance');
+  if (el && state.balance !== null) {
+    el.textContent = formatMoney(state.balance, state.currency);
+  }
 }
 
 /* ═══════════════════════════════════════════════════════
    VIEW NAVIGATION
 ═══════════════════════════════════════════════════════ */
 const viewTitles = {
-  dashboard: 'Dashboard',
-  wallet:    'Wallet Overview',
-  deposit:   'Deposit',
-  withdraw:  'Withdraw',
-  transfer:  'Transfer',
-  history:   'Transaction History',
-  lookup:    'Transaction Lookup',
+  dashboard: 'Dashboard', wallet: 'Wallet Overview',
+  deposit: 'Deposit', withdraw: 'Withdraw',
+  transfer: 'Transfer', history: 'Transaction History',
+  lookup: 'Transaction Lookup',
 };
 
 function showView(name) {
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-
   document.getElementById('view-' + name)?.classList.add('active');
   document.getElementById('nav-' + name)?.classList.add('active');
-
-  const title = viewTitles[name] || name;
-  document.getElementById('topbarTitle').innerHTML = `<strong>${title}</strong>`;
-
+  document.getElementById('topbarTitle').innerHTML = `<strong>${viewTitles[name] || name}</strong>`;
   state.currentView = name;
 
-  // Lazy load data
   if (name === 'dashboard') loadDashboard();
-  if (name === 'wallet') loadWallet();
-  if (name === 'history') loadHistory();
-  if (name === 'withdraw') loadWithdrawInfo();
-  if (name === 'transfer') loadTransferInfo();
+  if (name === 'wallet')    loadWallet();
+  if (name === 'history')   loadHistory();
+  if (name === 'withdraw')  loadWithdrawInfo();
+  if (name === 'transfer')  loadTransferInfo();
+  if (name === 'deposit')   loadDepositInfo();
 }
 
 function refreshCurrentView() { showView(state.currentView); }
+
+/* ═══════════════════════════════════════════════════════
+   VALIDATION HELPERS
+═══════════════════════════════════════════════════════ */
+function validateAmount(raw, available = null, label = 'amount') {
+  const n = parseFloat(raw);
+  if (!raw || isNaN(n))       throw new Error(`Enter a valid ${label}`);
+  if (n <= 0)                 throw new Error(`${label} must be greater than zero`);
+  if (n > 999999999)          throw new Error(`${label} exceeds maximum allowed`);
+  if (available !== null && n > parseFloat(available))
+                              throw new Error(`Insufficient balance — available: ${formatMoney(available, state.currency)}`);
+  return n;
+}
+
+function validateRef(raw) {
+  if (!raw || !raw.trim()) throw new Error('Reference ID is required');
+  if (raw.trim().length > 255) throw new Error('Reference ID too long (max 255 chars)');
+  return raw.trim();
+}
 
 /* ═══════════════════════════════════════════════════════
    DASHBOARD
 ═══════════════════════════════════════════════════════ */
 async function loadDashboard() {
   if (!state.walletId) return;
-
   try {
     const [wallet, txs, user] = await Promise.all([
       api('GET', `/wallets/${state.walletId}`),
@@ -1665,29 +1726,30 @@ async function loadDashboard() {
 
     state.balance = wallet.balance;
     state.currency = wallet.currency;
+    state.allTxs = txs;
+    saveSession();
+    updateTopbarBalance();
 
     document.getElementById('dash-balance').textContent = formatMoney(wallet.balance, wallet.currency);
     document.getElementById('dash-currency').textContent = wallet.currency;
     document.getElementById('dash-walletId').textContent = `#${wallet.walletId}`;
     document.getElementById('dash-txCount').textContent = txs.length;
-    document.getElementById('dash-status').innerHTML = `<span class="chip chip-green">${user.status}</span>`;
 
-    // Compute totals
+    // Status chip with correct color per status
+    const statusColors = { ACTIVE: 'chip-green', SUSPENDED: 'chip-amber', CLOSED: 'chip-red' };
+    const statusColor = statusColors[user.status] || 'chip-amber';
+    document.getElementById('dash-status').innerHTML = `<span class="chip ${statusColor}">${user.status}</span>`;
+
     let credited = 0, debited = 0;
     txs.forEach(tx => {
-      const amt = parseFloat(tx.amount);
-      if (amt > 0) credited += amt;
-      else debited += Math.abs(amt);
+      const a = parseFloat(tx.amount);
+      if (a > 0) credited += a; else debited += Math.abs(a);
     });
-
     document.getElementById('dash-credited').textContent = formatMoney(credited, wallet.currency);
     document.getElementById('dash-debited').textContent = formatMoney(debited, wallet.currency);
 
-    // Recent 5
-    const tbody = document.getElementById('dash-txTable');
     const recent = [...txs].reverse().slice(0, 5);
-    renderTxRows(tbody, recent, false);
-
+    renderTxRows(document.getElementById('dash-txTable'), recent, false);
   } catch(e) {
     toast('error', 'Load failed', e.message);
   }
@@ -1702,19 +1764,223 @@ async function loadWallet() {
     const wallet = await api('GET', `/wallets/${state.walletId}`);
     state.balance = wallet.balance;
     state.currency = wallet.currency;
+    saveSession();
+    updateTopbarBalance();
 
     document.getElementById('wal-balance').textContent = formatMoney(wallet.balance, wallet.currency);
     document.getElementById('wal-currency').textContent = wallet.currency;
     document.getElementById('wal-walletId').textContent = wallet.walletId;
     document.getElementById('wal-userId').textContent = wallet.userId;
     document.getElementById('wal-updatedAt').textContent = formatDate(wallet.updatedAt);
+
+    // update quick-form available labels
+    document.getElementById('qdep-available').textContent = formatMoney(wallet.balance, wallet.currency);
+    document.getElementById('qwith-available').textContent = formatMoney(wallet.balance, wallet.currency);
   } catch(e) {
     toast('error', 'Failed to load wallet', e.message);
   }
 }
 
 /* ═══════════════════════════════════════════════════════
-   HISTORY
+   DEPOSIT (dedicated view)
+═══════════════════════════════════════════════════════ */
+async function loadDepositInfo() {
+  if (!state.walletId) return;
+  try {
+    const w = await api('GET', `/wallets/${state.walletId}`);
+    state.balance = w.balance; state.currency = w.currency;
+    updateTopbarBalance();
+    const el = document.getElementById('dep-available');
+    if (el) el.textContent = formatMoney(w.balance, w.currency);
+  } catch(e) {}
+}
+
+async function doDeposit() {
+  let amount, ref;
+  try {
+    amount = validateAmount(document.getElementById('dep-amount').value);
+    ref    = validateRef(document.getElementById('dep-ref').value);
+  } catch(e) { toast('error', 'Validation error', e.message); return; }
+
+  const desc = document.getElementById('dep-desc').value;
+  const btn  = document.getElementById('depBtnText');
+  btn.innerHTML = '<span class="loader"></span> Processing...';
+
+  try {
+    const data = await api('POST', `/wallets/${state.walletId}/deposit`, {
+      amount, referenceId: ref, description: desc || null
+    });
+    toast('success', 'Deposit successful', `+${formatMoney(amount, state.currency)} added to wallet`);
+    showResultCard('dep-result', data, 'deposit');
+    clearForm(['dep-amount', 'dep-ref', 'dep-desc']);
+    await refreshBalance();
+  } catch(e) {
+    toast('error', 'Deposit failed', e.message);
+  } finally {
+    btn.textContent = '↓ Deposit to Wallet';
+  }
+}
+
+/* ═══════════════════════════════════════════════════════
+   WITHDRAW
+═══════════════════════════════════════════════════════ */
+async function loadWithdrawInfo() {
+  if (!state.walletId) return;
+  try {
+    const w = await api('GET', `/wallets/${state.walletId}`);
+    state.balance = w.balance; state.currency = w.currency;
+    updateTopbarBalance();
+    document.getElementById('with-available').textContent = formatMoney(w.balance, w.currency);
+  } catch(e) {}
+}
+
+async function doWithdraw() {
+  let amount, ref;
+  try {
+    amount = validateAmount(document.getElementById('with-amount').value, state.balance);
+    ref    = validateRef(document.getElementById('with-ref').value);
+  } catch(e) { toast('error', 'Validation error', e.message); return; }
+
+  const desc = document.getElementById('with-desc').value;
+
+  showConfirm(
+    'Confirm Withdrawal',
+    `Withdraw ${formatMoney(amount, state.currency)} from your wallet?<br><br>Reference: <code>${ref}</code>`,
+    async () => {
+      const btn = document.getElementById('withBtnText');
+      btn.innerHTML = '<span class="loader"></span> Processing...';
+      try {
+        const data = await api('POST', `/wallets/${state.walletId}/withdraw`, {
+          amount, referenceId: ref, description: desc || null
+        });
+        toast('success', 'Withdrawal successful', `${formatMoney(amount, state.currency)} withdrawn`);
+        showResultCard('with-result', data, 'withdrawal');
+        clearForm(['with-amount', 'with-ref', 'with-desc']);
+        await refreshBalance();
+        document.getElementById('with-available').textContent = formatMoney(state.balance, state.currency);
+      } catch(e) {
+        toast('error', 'Withdrawal failed', e.message);
+      } finally {
+        btn.textContent = '↑ Withdraw from Wallet';
+      }
+    }
+  );
+}
+
+/* ═══════════════════════════════════════════════════════
+   TRANSFER
+═══════════════════════════════════════════════════════ */
+async function loadTransferInfo() {
+  if (!state.walletId) return;
+  try {
+    const w = await api('GET', `/wallets/${state.walletId}`);
+    state.balance = w.balance; state.currency = w.currency;
+    updateTopbarBalance();
+    document.getElementById('trf-available').textContent = formatMoney(w.balance, w.currency);
+  } catch(e) {}
+}
+
+async function doTransfer() {
+  const toWallet = document.getElementById('trf-toWallet').value;
+  let amount, ref;
+  try {
+    if (!toWallet) throw new Error('Destination wallet ID is required');
+    const toId = parseInt(toWallet);
+    if (isNaN(toId) || toId <= 0)         throw new Error('Invalid destination wallet ID');
+    if (toId === state.walletId)           throw new Error('Cannot transfer to your own wallet');
+    amount = validateAmount(document.getElementById('trf-amount').value, state.balance);
+    ref    = validateRef(document.getElementById('trf-ref').value);
+  } catch(e) { toast('error', 'Validation error', e.message); return; }
+
+  const desc = document.getElementById('trf-desc').value;
+
+  showConfirm(
+    'Confirm Transfer',
+    `Transfer ${formatMoney(amount, state.currency)} to wallet #${toWallet}?<br><br>Reference: <code>${ref}</code>`,
+    async () => {
+      const btn = document.getElementById('trfBtnText');
+      btn.innerHTML = '<span class="loader"></span> Processing...';
+      try {
+        const data = await api('POST', `/wallets/${state.walletId}/transfer`, {
+          toWalletId: parseInt(toWallet), amount, referenceId: ref, description: desc || null
+        });
+        toast('success', 'Transfer complete', `${formatMoney(amount, state.currency)} sent to wallet #${toWallet}`);
+        showTransferResult('trf-result', data);
+        clearForm(['trf-toWallet', 'trf-amount', 'trf-ref', 'trf-desc']);
+        await refreshBalance();
+        document.getElementById('trf-available').textContent = formatMoney(state.balance, state.currency);
+      } catch(e) {
+        toast('error', 'Transfer failed', e.message);
+      } finally {
+        btn.textContent = '⇄ Execute Transfer';
+      }
+    }
+  );
+}
+
+/* ═══════════════════════════════════════════════════════
+   QUICK ACTIONS (wallet view)
+═══════════════════════════════════════════════════════ */
+async function quickDeposit() {
+  let amount;
+  try {
+    amount = validateAmount(document.getElementById('qdep-amount').value);
+  } catch(e) { toast('error', 'Validation error', e.message); return; }
+
+  const desc = document.getElementById('qdep-desc').value;
+  const btn  = document.querySelector('#view-wallet .panel:first-child .btn');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="loader"></span> Processing...'; }
+
+  try {
+    await api('POST', `/wallets/${state.walletId}/deposit`, {
+      amount, referenceId: genRefValue(), description: desc || 'Quick deposit'
+    });
+    toast('success', 'Deposit successful', `+${formatMoney(amount, state.currency)} added`);
+    clearForm(['qdep-amount', 'qdep-desc']);
+    await refreshBalance();
+    document.getElementById('qdep-available').textContent = formatMoney(state.balance, state.currency);
+    document.getElementById('qwith-available').textContent = formatMoney(state.balance, state.currency);
+  } catch(e) {
+    toast('error', 'Deposit failed', e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '↓ Deposit Funds'; }
+  }
+}
+
+async function quickWithdraw() {
+  let amount;
+  try {
+    amount = validateAmount(document.getElementById('qwith-amount').value, state.balance);
+  } catch(e) { toast('error', 'Validation error', e.message); return; }
+
+  const desc = document.getElementById('qwith-desc').value;
+
+  showConfirm(
+    'Confirm Quick Withdrawal',
+    `Withdraw ${formatMoney(amount, state.currency)} from your wallet?`,
+    async () => {
+      const btn = document.querySelector('#view-wallet .panel:last-child .btn');
+      if (btn) { btn.disabled = true; btn.innerHTML = '<span class="loader"></span> Processing...'; }
+      try {
+        await api('POST', `/wallets/${state.walletId}/withdraw`, {
+          amount, referenceId: genRefValue(), description: desc || 'Quick withdrawal'
+        });
+        toast('success', 'Withdrawal successful', `${formatMoney(amount, state.currency)} withdrawn`);
+        clearForm(['qwith-amount', 'qwith-desc']);
+        await refreshBalance();
+        document.getElementById('qdep-available').textContent = formatMoney(state.balance, state.currency);
+        document.getElementById('qwith-available').textContent = formatMoney(state.balance, state.currency);
+      } catch(e) {
+        toast('error', 'Withdrawal failed', e.message);
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '↑ Withdraw Funds'; }
+      }
+    }
+  );
+}
+
+/* ═══════════════════════════════════════════════════════
+   HISTORY (with filter + search)
 ═══════════════════════════════════════════════════════ */
 async function loadHistory() {
   if (!state.walletId) return;
@@ -1723,196 +1989,51 @@ async function loadHistory() {
 
   try {
     const txs = await api('GET', `/wallets/${state.walletId}/transactions`);
-    renderTxRows(tbody, [...txs].reverse(), true);
+    state.allTxs = txs;
+    applyHistoryFilter();
   } catch(e) {
     tbody.innerHTML = `<tr><td colspan="6" class="empty-state" style="color:var(--red)">${e.message}</td></tr>`;
   }
 }
 
-function renderTxRows(tbody, txs, showId) {
-  if (!txs.length) {
-    tbody.innerHTML = `<tr><td colspan="${showId ? 6 : 5}" class="empty-state">
-      <div class="empty-icon">◈</div>No transactions yet</td></tr>`;
-    return;
+function applyHistoryFilter() {
+  const query  = (document.getElementById('history-search')?.value || '').toLowerCase();
+  const filter = document.getElementById('history-filter')?.value || 'all';
+  const sort   = document.getElementById('history-sort')?.value || 'newest';
+
+  let txs = [...state.allTxs];
+
+  // Type filter
+  if (filter !== 'all') txs = txs.filter(tx => tx.type.toLowerCase() === filter);
+
+  // Search: match ref ID, description, amount
+  if (query) {
+    txs = txs.filter(tx =>
+      (tx.referenceId || '').toLowerCase().includes(query) ||
+      (tx.description || '').toLowerCase().includes(query) ||
+      String(tx.amount).includes(query) ||
+      String(tx.transactionId).includes(query)
+    );
   }
 
-  tbody.innerHTML = txs.map(tx => {
-    const isCredit = parseFloat(tx.amount) > 0;
-    const badge = badgeForType(tx.type);
-    const amtClass = isCredit ? 'credit' : 'debit';
-    const amtPrefix = isCredit ? '+' : '';
-    const idCol = showId ? `<td style="color:var(--text-3); font-size:11px">#${tx.transactionId}</td>` : '';
-    return `<tr>
-      ${idCol}
-      <td>${badge}</td>
-      <td class="tx-amount ${amtClass}">${amtPrefix}${formatMoney(Math.abs(tx.amount), state.currency)}</td>
-      <td style="color:var(--text-2); font-size:11px">${tx.description || '—'}</td>
-      <td><div class="tx-refid" title="${tx.referenceId}">${tx.referenceId}</div></td>
-      <td style="font-size:11px; color:var(--text-3)">${formatDate(tx.createdAt)}</td>
-    </tr>`;
-  }).join('');
-}
+  // Sort
+  txs.sort((a, b) => {
+    const da = new Date(a.createdAt), db = new Date(b.createdAt);
+    if (sort === 'newest') return db - da;
+    if (sort === 'oldest') return da - db;
+    if (sort === 'highest') return Math.abs(parseFloat(b.amount)) - Math.abs(parseFloat(a.amount));
+    if (sort === 'lowest')  return Math.abs(parseFloat(a.amount)) - Math.abs(parseFloat(b.amount));
+    return 0;
+  });
 
-function badgeForType(type) {
-  const t = (type || '').toLowerCase();
-  const labels = {
-    deposit: '↓ Deposit',
-    withdrawal: '↑ Withdrawal',
-    transfer_in: '→ Transfer In',
-    transfer_out: '← Transfer Out',
-    fee: '% Fee',
-    refund: '↩ Refund',
-    adjustment: '± Adjust',
-  };
-  return `<span class="tx-type-badge badge-${t}">${labels[t] || type}</span>`;
+  renderTxRows(document.getElementById('history-table'), txs, true);
+
+  const countEl = document.getElementById('history-count');
+  if (countEl) countEl.textContent = `${txs.length} of ${state.allTxs.length} entries`;
 }
 
 /* ═══════════════════════════════════════════════════════
-   DEPOSIT
-═══════════════════════════════════════════════════════ */
-async function quickDeposit() {
-  const amount = document.getElementById('qdep-amount').value;
-  const desc = document.getElementById('qdep-desc').value;
-  if (!amount) { toast('error', 'Missing amount', 'Enter an amount to deposit'); return; }
-  await executeDeposit(amount, genRefValue(), desc, 'qdep');
-}
-
-async function doDeposit() {
-  const amount = document.getElementById('dep-amount').value;
-  const ref = document.getElementById('dep-ref').value.trim();
-  const desc = document.getElementById('dep-desc').value;
-
-  if (!amount || !ref) { toast('error', 'Missing fields', 'Amount and Reference ID are required'); return; }
-  await executeDeposit(amount, ref, desc, 'dep');
-}
-
-async function executeDeposit(amount, ref, desc, prefix) {
-  const btn = prefix === 'dep'
-    ? document.getElementById('depBtnText')
-    : null;
-
-  if (btn) btn.innerHTML = '<span class="loader"></span> Processing...';
-
-  try {
-    const data = await api('POST', `/wallets/${state.walletId}/deposit`, {
-      amount: parseFloat(amount),
-      referenceId: ref,
-      description: desc || null,
-    });
-
-    toast('success', 'Deposit successful', `+${formatMoney(Math.abs(data.amount), state.currency)} added to wallet`);
-
-    if (prefix === 'dep') {
-      showResultCard('dep-result', data, 'deposit');
-    }
-
-    // Refresh balance
-    await refreshBalance();
-
-  } catch(e) {
-    toast('error', 'Deposit failed', e.message);
-  } finally {
-    if (btn) btn.textContent = '↓ Deposit to Wallet';
-  }
-}
-
-/* ═══════════════════════════════════════════════════════
-   WITHDRAW
-═══════════════════════════════════════════════════════ */
-async function loadWithdrawInfo() {
-  try {
-    const w = await api('GET', `/wallets/${state.walletId}`);
-    document.getElementById('with-available').textContent = formatMoney(w.balance, w.currency);
-    state.balance = w.balance;
-  } catch(e) {}
-}
-
-async function quickWithdraw() {
-  const amount = document.getElementById('qwith-amount').value;
-  const desc = document.getElementById('qwith-desc').value;
-  if (!amount) { toast('error', 'Missing amount', 'Enter an amount to withdraw'); return; }
-  await executeWithdraw(amount, genRefValue(), desc, 'qwith');
-}
-
-async function doWithdraw() {
-  const amount = document.getElementById('with-amount').value;
-  const ref = document.getElementById('with-ref').value.trim();
-  const desc = document.getElementById('with-desc').value;
-
-  if (!amount || !ref) { toast('error', 'Missing fields', 'Amount and Reference ID are required'); return; }
-  await executeWithdraw(amount, ref, desc, 'with');
-}
-
-async function executeWithdraw(amount, ref, desc, prefix) {
-  const btn = prefix === 'with' ? document.getElementById('withBtnText') : null;
-  if (btn) btn.innerHTML = '<span class="loader"></span> Processing...';
-
-  try {
-    const data = await api('POST', `/wallets/${state.walletId}/withdraw`, {
-      amount: parseFloat(amount),
-      referenceId: ref,
-      description: desc || null,
-    });
-
-    toast('success', 'Withdrawal successful', `${formatMoney(Math.abs(data.amount), state.currency)} withdrawn`);
-
-    if (prefix === 'with') {
-      showResultCard('with-result', data, 'withdrawal');
-    }
-
-    await refreshBalance();
-  } catch(e) {
-    toast('error', 'Withdrawal failed', e.message);
-  } finally {
-    if (btn) btn.textContent = '↑ Withdraw from Wallet';
-  }
-}
-
-/* ═══════════════════════════════════════════════════════
-   TRANSFER
-═══════════════════════════════════════════════════════ */
-async function loadTransferInfo() {
-  try {
-    const w = await api('GET', `/wallets/${state.walletId}`);
-    document.getElementById('trf-available').textContent = formatMoney(w.balance, w.currency);
-    state.balance = w.balance;
-  } catch(e) {}
-}
-
-async function doTransfer() {
-  const toWallet = document.getElementById('trf-toWallet').value;
-  const amount = document.getElementById('trf-amount').value;
-  const ref = document.getElementById('trf-ref').value.trim();
-  const desc = document.getElementById('trf-desc').value;
-
-  if (!toWallet || !amount || !ref) {
-    toast('error', 'Missing fields', 'Destination wallet, amount, and reference ID are required');
-    return;
-  }
-
-  const btn = document.getElementById('trfBtnText');
-  btn.innerHTML = '<span class="loader"></span> Processing...';
-
-  try {
-    const data = await api('POST', `/wallets/${state.walletId}/transfer`, {
-      toWalletId: parseInt(toWallet),
-      amount: parseFloat(amount),
-      referenceId: ref,
-      description: desc || null,
-    });
-
-    toast('success', 'Transfer complete', `${formatMoney(data.amount, state.currency)} sent to wallet #${toWallet}`);
-    showTransferResult('trf-result', data);
-    await refreshBalance();
-  } catch(e) {
-    toast('error', 'Transfer failed', e.message);
-  } finally {
-    btn.textContent = '⇄ Execute Transfer';
-  }
-}
-
-/* ═══════════════════════════════════════════════════════
-   LOOKUP
+   LOOKUP (by reference ID in cached transactions)
 ═══════════════════════════════════════════════════════ */
 async function doLookup() {
   const ref = document.getElementById('lookup-ref').value.trim();
@@ -1924,7 +2045,28 @@ async function doLookup() {
   result.classList.add('visible');
 
   try {
-    const data = await api('GET', `/transactions/${encodeURIComponent(ref)}`);
+    // Search in cached transactions first (fast path)
+    let data = null;
+    if (state.allTxs.length) {
+      data = state.allTxs.find(tx =>
+        tx.referenceId === ref || tx.referenceId?.toLowerCase() === ref.toLowerCase()
+      );
+    }
+
+    // If not in cache, fetch full history and search again
+    if (!data) {
+      const txs = await api('GET', `/wallets/${state.walletId}/transactions`);
+      state.allTxs = txs;
+      data = txs.find(tx =>
+        tx.referenceId === ref || tx.referenceId?.toLowerCase() === ref.toLowerCase()
+      );
+    }
+
+    if (!data) {
+      result.innerHTML = `<div style="color:var(--red); font-size:12px; padding:12px">⚠ No transaction found with reference ID: <strong>${ref}</strong></div>`;
+      return;
+    }
+
     const isCredit = parseFloat(data.amount) > 0;
     result.innerHTML = `
       <div class="result-row"><span class="result-key">Transaction ID</span><span class="result-val">#${data.transactionId}</span></div>
@@ -1947,9 +2089,7 @@ function showResultCard(id, tx, type) {
   const el = document.getElementById(id);
   const isCredit = parseFloat(tx.amount) > 0;
   el.innerHTML = `
-    <div style="margin-bottom:10px; font-size:10px; color:var(--text-3); letter-spacing:2px; text-transform:uppercase;">
-      ✓ Transaction recorded
-    </div>
+    <div style="margin-bottom:10px; font-size:10px; color:var(--text-3); letter-spacing:2px; text-transform:uppercase;">✓ Transaction recorded</div>
     <div class="result-row"><span class="result-key">ID</span><span class="result-val">#${tx.transactionId}</span></div>
     <div class="result-row"><span class="result-key">Amount</span><span class="result-val ${isCredit ? 'text-green' : 'text-red'}">${isCredit ? '+' : ''}${formatMoney(Math.abs(tx.amount), state.currency)}</span></div>
     <div class="result-row"><span class="result-key">Reference</span><span class="result-val">${tx.referenceId}</span></div>
@@ -1962,16 +2102,47 @@ function showResultCard(id, tx, type) {
 function showTransferResult(id, transfer) {
   const el = document.getElementById(id);
   el.innerHTML = `
-    <div style="margin-bottom:10px; font-size:10px; color:var(--text-3); letter-spacing:2px; text-transform:uppercase;">
-      ✓ Transfer complete
-    </div>
+    <div style="margin-bottom:10px; font-size:10px; color:var(--text-3); letter-spacing:2px; text-transform:uppercase;">✓ Transfer complete</div>
     <div class="result-row"><span class="result-key">Amount</span><span class="result-val text-amber">${formatMoney(transfer.amount, state.currency)}</span></div>
     <div class="result-row"><span class="result-key">Reference</span><span class="result-val">${transfer.referenceId}</span></div>
-    <div class="result-row"><span class="result-key">Debit Entry</span><span class="result-val">#${transfer.debit.transactionId}</span></div>
-    <div class="result-row"><span class="result-key">Credit Entry</span><span class="result-val">#${transfer.credit.transactionId}</span></div>
+    <div class="result-row"><span class="result-key">Debit Entry</span><span class="result-val">#${transfer.debit?.transactionId ?? '—'}</span></div>
+    <div class="result-row"><span class="result-key">Credit Entry</span><span class="result-val">#${transfer.credit?.transactionId ?? '—'}</span></div>
   `;
   el.style.marginTop = '14px';
   el.classList.add('visible');
+}
+
+/* ═══════════════════════════════════════════════════════
+   RENDER
+═══════════════════════════════════════════════════════ */
+function renderTxRows(tbody, txs, showId) {
+  if (!txs.length) {
+    tbody.innerHTML = `<tr><td colspan="${showId ? 6 : 5}" class="empty-state">
+      <div class="empty-icon">◈</div>No transactions found</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = txs.map(tx => {
+    const isCredit = parseFloat(tx.amount) > 0;
+    const idCol = showId ? `<td style="color:var(--text-3); font-size:11px">#${tx.transactionId}</td>` : '';
+    return `<tr>
+      ${idCol}
+      <td>${badgeForType(tx.type)}</td>
+      <td class="tx-amount ${isCredit ? 'credit' : 'debit'}">${isCredit ? '+' : ''}${formatMoney(Math.abs(tx.amount), state.currency)}</td>
+      <td style="color:var(--text-2); font-size:11px">${tx.description || '—'}</td>
+      <td><div class="tx-refid" title="${tx.referenceId}">${tx.referenceId}</div></td>
+      <td style="font-size:11px; color:var(--text-3)">${formatDate(tx.createdAt)}</td>
+    </tr>`;
+  }).join('');
+}
+
+function badgeForType(type) {
+  const t = (type || '').toLowerCase();
+  const labels = {
+    deposit: '↓ Deposit', withdrawal: '↑ Withdrawal',
+    transfer_in: '→ Transfer In', transfer_out: '← Transfer Out',
+    fee: '% Fee', refund: '↩ Refund', adjustment: '± Adjust',
+  };
+  return `<span class="tx-type-badge badge-${t}">${labels[t] || type}</span>`;
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -1983,8 +2154,15 @@ async function refreshBalance() {
     state.balance = w.balance;
     state.currency = w.currency;
     saveSession();
-    // Update topbar (already shown via walletId)
+    updateTopbarBalance();
   } catch(e) {}
+}
+
+function clearForm(ids) {
+  ids.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = '';
+  });
 }
 
 function formatMoney(amount, currency) {
@@ -1992,10 +2170,8 @@ function formatMoney(amount, currency) {
   if (isNaN(num)) return '—';
   try {
     return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: currency || 'USD',
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 4,
+      style: 'currency', currency: currency || 'USD',
+      minimumFractionDigits: 2, maximumFractionDigits: 4,
     }).format(num);
   } catch(e) {
     return `${currency} ${num.toFixed(2)}`;
@@ -2004,15 +2180,14 @@ function formatMoney(amount, currency) {
 
 function formatDate(iso) {
   if (!iso) return '—';
-  const d = new Date(iso);
-  return d.toLocaleString('en-GB', {
+  return new Date(iso).toLocaleString('en-GB', {
     day: '2-digit', month: 'short', year: 'numeric',
     hour: '2-digit', minute: '2-digit',
   });
 }
 
 function genRefValue() {
-  const ts = Date.now().toString(36).toUpperCase();
+  const ts   = Date.now().toString(36).toUpperCase();
   const rand = Math.random().toString(36).slice(2, 6).toUpperCase();
   return `REF-${ts}-${rand}`;
 }
@@ -2027,7 +2202,6 @@ function genRef(inputId) {
 function toast(type, title, msg) {
   const icons = { success: '✓', error: '✕', info: '◈' };
   const container = document.getElementById('toastContainer');
-
   const el = document.createElement('div');
   el.className = `toast ${type}`;
   el.innerHTML = `
@@ -2039,32 +2213,51 @@ function toast(type, title, msg) {
     <div class="toast-close" onclick="this.parentElement.remove()">✕</div>
   `;
   container.appendChild(el);
-
   setTimeout(() => {
-    el.style.opacity = '0';
-    el.style.transform = 'translateX(20px)';
+    el.style.opacity = '0'; el.style.transform = 'translateX(20px)';
     el.style.transition = 'all 0.3s ease';
     setTimeout(() => el.remove(), 300);
   }, 4000);
 }
 
 /* ═══════════════════════════════════════════════════════
-   MODAL
+   CONFIRM MODAL (reusable)
 ═══════════════════════════════════════════════════════ */
+function showConfirm(title, body, onConfirm) {
+  document.getElementById('confirmTitle').textContent = title;
+  document.getElementById('confirmBody').innerHTML = body;
+  const modal = document.getElementById('confirmModal');
+  modal.classList.add('visible');
+  const btn = document.getElementById('confirmOkBtn');
+  const handler = () => {
+    modal.classList.remove('visible');
+    btn.removeEventListener('click', handler);
+    onConfirm();
+  };
+  btn.addEventListener('click', handler);
+}
+
 function closeModal() {
   document.getElementById('confirmModal').classList.remove('visible');
 }
 
-// Allow Enter key on login
+/* ═══════════════════════════════════════════════════════
+   KEYBOARD SHORTCUTS
+═══════════════════════════════════════════════════════ */
 document.addEventListener('keydown', e => {
-  if (e.key === 'Enter') {
-    if (document.getElementById('authScreen').classList.contains('visible')) {
+  // Enter to submit on auth screen
+  if (document.getElementById('authScreen').classList.contains('visible')) {
+    if (e.key === 'Enter') {
       const loginVisible = document.getElementById('loginForm').style.display !== 'none';
-      if (loginVisible) doLogin();
-      else doRegister();
+      if (loginVisible) doLogin(); else doRegister();
     }
+    return;
   }
+  // Escape to close modal
+  if (e.key === 'Escape') closeModal();
 });
 </script>
+
+
 </body>
 </html>

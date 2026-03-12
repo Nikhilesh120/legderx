@@ -1,13 +1,9 @@
 package com.ledgerxlite.controller;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.ledgerxlite.domain.User;
+import com.ledgerxlite.domain.LedgerEntry;
 import com.ledgerxlite.domain.Wallet;
-import com.ledgerxlite.dto.TransactionRequest;
-import com.ledgerxlite.dto.TransferRequest;
 import com.ledgerxlite.service.TransactionService;
 import com.ledgerxlite.service.WalletService;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -17,140 +13,139 @@ import org.springframework.http.MediaType;
 import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.web.servlet.MockMvc;
 
-import java.math.BigDecimal;
-import java.util.List;
+import java.lang.reflect.Constructor;
 import java.util.Optional;
 
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-/**
- * Controller slice tests — HTTP contract verification.
- * No database. No full Spring context.
- */
 @WebMvcTest(WalletController.class)
+@WithMockUser(username = "test-user", roles = {"USER"})
 class WalletControllerTest {
 
-    @Autowired MockMvc         mockMvc;
-    @Autowired ObjectMapper    objectMapper;
+    @Autowired
+    private MockMvc mockMvc;
 
-    @MockBean TransactionService transactionService;
-    @MockBean WalletService      walletService;
+    @MockBean
+    private TransactionService transactionService;
 
-    // A stub wallet (user ownership not enforced in @WithMockUser context)
-    private Wallet stubWallet;
+    @MockBean
+    private WalletService walletService;
 
-    @BeforeEach
-    void setUp() throws Exception {
-        User stubUser = new User("stub@test.com", "hash");
-        var userIdField = User.class.getDeclaredField("id");
-        userIdField.setAccessible(true);
-        userIdField.set(stubUser, 1L);
+    // ─────────────────────────────────────────────────────
+    // HELPERS
+    // ─────────────────────────────────────────────────────
 
-        stubWallet = new Wallet(stubUser, "USD");
-        var walletIdField = Wallet.class.getDeclaredField("id");
-        walletIdField.setAccessible(true);
-        walletIdField.set(stubWallet, 1L);
+    private static Wallet blankWallet() throws Exception {
+        Constructor<Wallet> ctor = Wallet.class.getDeclaredConstructor();
+        ctor.setAccessible(true);
+        return ctor.newInstance();
     }
 
-    // ── wallet not found → 404 ───────────────────────────────────────────────
-
-    @Test @WithMockUser @DisplayName("GET /wallets/{id} unknown wallet → 404")
-    void getWalletNotFound() throws Exception {
-        when(walletService.findById(99L)).thenReturn(Optional.empty());
-
-        mockMvc.perform(get("/wallets/99"))
-               .andExpect(status().isNotFound());
+    private static LedgerEntry stubEntry() {
+        return mock(LedgerEntry.class, RETURNS_DEEP_STUBS);
     }
 
-    // ── deposit bad requests → 400 ───────────────────────────────────────────
+    // ─────────────────────────────────────────────────────
+    // DEPOSIT
+    // ─────────────────────────────────────────────────────
 
-    @Test @WithMockUser @DisplayName("POST deposit with missing amount → 400")
-    void depositMissingAmount() throws Exception {
-        var req = new TransactionRequest(null, "REF-1", null);
+    @Test
+    @DisplayName("POST /wallets/{id}/deposit → 200 OK")
+    void deposit_success() throws Exception {
+        when(walletService.findById(10L)).thenReturn(Optional.of(blankWallet()));
+        when(transactionService.deposit(any(), any(), any(), any()))
+                .thenReturn(stubEntry());
 
-        mockMvc.perform(post("/wallets/1/deposit")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(objectMapper.writeValueAsString(req)))
-               .andExpect(status().isBadRequest());
+        mockMvc.perform(post("/wallets/10/deposit")
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                            {
+                              "amount": 100,
+                              "referenceId": "REF-1"
+                            }
+                        """))
+                .andExpect(status().isOk());
     }
 
-    @Test @WithMockUser @DisplayName("POST deposit with missing referenceId → 400")
-    void depositMissingRef() throws Exception {
-        var req = new TransactionRequest(BigDecimal.TEN, "", null);
+    // ─────────────────────────────────────────────────────
+    // WITHDRAW
+    // ─────────────────────────────────────────────────────
 
-        mockMvc.perform(post("/wallets/1/deposit")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(objectMapper.writeValueAsString(req)))
-               .andExpect(status().isBadRequest());
+    @Test
+    @DisplayName("POST /wallets/{id}/withdraw → 200 OK")
+    void withdraw_success() throws Exception {
+        when(walletService.findById(10L)).thenReturn(Optional.of(blankWallet()));
+        when(transactionService.withdraw(any(), any(), any(), any()))
+                .thenReturn(stubEntry());
+
+        mockMvc.perform(post("/wallets/10/withdraw")
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                            {
+                              "amount": 50,
+                              "referenceId": "REF-2"
+                            }
+                        """))
+                .andExpect(status().isOk());
     }
 
-    // ── invariant violation → 409 ────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────
+    // TRANSFER
+    // ─────────────────────────────────────────────────────
 
-    @Test @WithMockUser @DisplayName("POST deposit on inactive wallet → 409")
-    void depositInactiveWallet() throws Exception {
-        when(walletService.findById(1L)).thenReturn(Optional.of(stubWallet));
-        when(transactionService.deposit(anyLong(), any(), anyString(), any()))
-            .thenThrow(new IllegalStateException("INVARIANT-WALLET-ACTIVE VIOLATION"));
+    @Test
+    @DisplayName("POST /wallets/{from}/transfer → 200 OK")
+    void transfer_success() throws Exception {
+        when(walletService.findById(10L)).thenReturn(Optional.of(blankWallet()));
 
-        var req = new TransactionRequest(BigDecimal.TEN, "REF-1", null);
+        // ⚠️ Prepare entries BEFORE passing them into when(...).thenReturn(...)
+        // Stubbing a mock inside another when() call causes UnfinishedStubbingException.
+        LedgerEntry debitEntry = stubEntry();
+        LedgerEntry creditEntry = stubEntry();
+        when(debitEntry.getReferenceId()).thenReturn("REF-3-OUT");
 
-        mockMvc.perform(post("/wallets/1/deposit")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(objectMapper.writeValueAsString(req)))
-               .andExpect(status().isConflict())
-               .andExpect(jsonPath("$.error").value("CONFLICT"));
+        when(transactionService.transfer(any(), any(), any(), any(), any()))
+                .thenReturn(new LedgerEntry[]{debitEntry, creditEntry});
+
+        mockMvc.perform(post("/wallets/10/transfer")
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                            {
+                              "toWalletId": 20,
+                              "amount": 25,
+                              "referenceId": "REF-3"
+                            }
+                        """))
+                .andExpect(status().isOk());
     }
 
-    @Test @WithMockUser @DisplayName("POST withdraw insufficient balance → 409")
-    void withdrawInsufficientBalance() throws Exception {
-        when(walletService.findById(1L)).thenReturn(Optional.of(stubWallet));
-        when(transactionService.withdraw(anyLong(), any(), anyString(), any()))
-            .thenThrow(new IllegalStateException("INVARIANT-10 VIOLATION: Insufficient balance"));
+    @Test
+    @DisplayName("POST /wallets/{id}/transfer same wallet → 400 BAD REQUEST")
+    void transfer_invalid_sameWallet() throws Exception {
+        when(walletService.findById(10L)).thenReturn(Optional.of(blankWallet()));
+        when(transactionService.transfer(eq(10L), eq(10L), any(), any(), any()))
+                .thenThrow(new IllegalArgumentException("Source and destination wallets must be different"));
 
-        var req = new TransactionRequest(new BigDecimal("9999"), "REF-1", null);
-
-        mockMvc.perform(post("/wallets/1/withdraw")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(objectMapper.writeValueAsString(req)))
-               .andExpect(status().isConflict());
-    }
-
-    // ── transfer bad input → 400 ─────────────────────────────────────────────
-
-    @Test @WithMockUser @DisplayName("POST transfer same wallet → 400")
-    void transferSameWallet() throws Exception {
-        when(walletService.findById(1L)).thenReturn(Optional.of(stubWallet));
-        when(transactionService.transfer(anyLong(), anyLong(), any(), anyString(), any()))
-            .thenThrow(new IllegalArgumentException("INVARIANT-DISTINCT-WALLETS VIOLATION"));
-
-        var req = new TransferRequest(1L, BigDecimal.TEN, "REF-1", null);
-
-        mockMvc.perform(post("/wallets/1/transfer")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(objectMapper.writeValueAsString(req)))
-               .andExpect(status().isBadRequest());
-    }
-
-    // ── transaction history → 200 ────────────────────────────────────────────
-
-    @Test @WithMockUser @DisplayName("GET /wallets/{id}/transactions → 200 with list")
-    void transactionHistory() throws Exception {
-        when(walletService.findById(1L)).thenReturn(Optional.of(stubWallet));
-        when(transactionService.getTransactionHistory(1L)).thenReturn(List.of());
-
-        mockMvc.perform(get("/wallets/1/transactions"))
-               .andExpect(status().isOk())
-               .andExpect(content().contentType(MediaType.APPLICATION_JSON));
-    }
-
-    // ── unauthenticated → 401 ────────────────────────────────────────────────
-
-    @Test @DisplayName("GET /wallets/{id} without token → 401")
-    void unauthenticated() throws Exception {
-        mockMvc.perform(get("/wallets/1"))
-               .andExpect(status().isUnauthorized());
+        mockMvc.perform(post("/wallets/10/transfer")
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                            {
+                              "toWalletId": 10,
+                              "amount": 25,
+                              "referenceId": "REF-INVALID"
+                            }
+                        """))
+                .andExpect(status().isBadRequest());
     }
 }

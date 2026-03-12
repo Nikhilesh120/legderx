@@ -172,7 +172,7 @@ public class Wallet {
         
         BigDecimal newBalance = this.balance.subtract(amount);
         if (newBalance.compareTo(BigDecimal.ZERO) < 0) {
-            throw new IllegalStateException("Insufficient balance");
+            throw new IllegalStateException("INVARIANT-10: Insufficient balance");
         }
         
         this.balance = newBalance;
